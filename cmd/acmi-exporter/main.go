@@ -2,17 +2,24 @@ package main
 
 import (
 	"context"
+	"net"
 	"time"
 
+	"github.com/dharmab/acmi-exporter/pkg/acmi/objects"
+	acmi "github.com/dharmab/acmi-exporter/pkg/acmi/server"
 	"github.com/dharmab/acmi-exporter/pkg/streamer"
-	"github.com/dharmab/acmi-exporter/pkg/tacview/objects"
 
 	"github.com/rs/zerolog/log"
 
 	"github.com/spf13/cobra"
 )
 
-var grpcAddress string
+var (
+	grpcAddress      string
+	telemetryAddress string
+	hostname         string
+	password         string
+)
 
 var exporterCmd = &cobra.Command{
 	Use:   "acmi-exporter",
@@ -23,6 +30,10 @@ var exporterCmd = &cobra.Command{
 
 func init() {
 	exporterCmd.PersistentFlags().StringVar(&grpcAddress, "grpc-address", "localhost:50051", "Address of the DCS-gRPC server")
+	exporterCmd.PersistentFlags().StringVar(&telemetryAddress, "telemetry-address", "localhost:42675", "Address to serve telemetry on")
+	exporterCmd.PersistentFlags().StringVar(&hostname, "hostname", "acmi-exporter", "ACMI protocol hostname")
+	exporterCmd.PersistentFlags().StringVar(&password, "password", "", "ACMI protocol password")
+	exporterCmd.MarkPersistentFlagRequired("password")
 }
 
 func main() {
@@ -33,13 +44,22 @@ func main() {
 
 func RunApp(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
+
+	updates := make(chan *objects.Object)
+	removals := make(chan uint32)
+
 	streamer, err := streamer.NewStreamer(grpcAddress, 2*time.Second)
 	if err != nil {
 		return err
 	}
-	updates := make(chan *objects.Object)
-	removals := make(chan uint32)
 	streamer.Stream(ctx, updates, removals)
+
+	listener, err := net.Listen("tcp", telemetryAddress)
+	if err != nil {
+		return err
+	}
+	server := acmi.NewServer(listener, "acmi-exporter", "password", streamer)
+	server.Serve(ctx, updates, removals)
 
 	return nil
 }

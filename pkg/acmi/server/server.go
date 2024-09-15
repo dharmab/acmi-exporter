@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dharmab/acmi-exporter/pkg/acmi/objects"
+	"github.com/dharmab/acmi-exporter/pkg/acmi/properties"
 	"github.com/dharmab/acmi-exporter/pkg/streamer"
-	"github.com/dharmab/acmi-exporter/pkg/tacview/objects"
-	"github.com/dharmab/acmi-exporter/pkg/tacview/properties"
 )
 
 type Server struct {
@@ -39,7 +39,6 @@ func NewServer(listener net.Listener, hostname, password string, streamer *strea
 }
 
 func (s *Server) Serve(ctx context.Context, updates <-chan *objects.Object, removals <-chan uint32) error {
-
 	for {
 		select {
 		case <-ctx.Done():

@@ -11,9 +11,9 @@ import (
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/common"
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/mission"
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/unit"
-	"github.com/dharmab/acmi-exporter/pkg/tacview/objects"
-	"github.com/dharmab/acmi-exporter/pkg/tacview/properties"
-	"github.com/dharmab/acmi-exporter/pkg/tacview/tags"
+	"github.com/dharmab/acmi-exporter/pkg/acmi/objects"
+	"github.com/dharmab/acmi-exporter/pkg/acmi/properties"
+	"github.com/dharmab/acmi-exporter/pkg/acmi/tags"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 )
