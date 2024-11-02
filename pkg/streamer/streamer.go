@@ -204,14 +204,16 @@ func (s *Streamer) buildUpdate(resp *mission.StreamUnitsResponse) *objects.Updat
 			},
 		}
 
-		for k, v := range map[string]string{
-			properties.Name:     _unit.GetType(),
-			properties.Pilot:    _unit.GetPlayerName(),
-			properties.CallSign: _unit.GetName(),
-		} {
-			if v != "" {
-				update.Properties[k] = v
-			}
+		if _unit.Type != "" {
+			update.Properties[properties.Name] = _unit.Type
+		}
+		if _unit.PlayerName != nil && *_unit.PlayerName != "" {
+			update.Properties[properties.Pilot] = *_unit.PlayerName
+		} else if _unit.Name != "" {
+			update.Properties[properties.Pilot] = _unit.Name
+		}
+		if _unit.Group != nil && _unit.Group.Name != "" {
+			update.Properties[properties.Group] = _unit.Group.Name
 		}
 		update.Properties[properties.Coalition] = convertCoalition(_unit.GetCoalition())
 		update.Properties[properties.Color] = coalitionColor(_unit.GetCoalition())

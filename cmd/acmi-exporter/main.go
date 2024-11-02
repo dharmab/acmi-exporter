@@ -27,6 +27,7 @@ var (
 	airUnitUpdateInterval     time.Duration
 	surfaceUnitUpdateInterval time.Duration
 	weaponUpdateInterval      time.Duration
+	publishStdout             bool
 )
 
 var exporterCmd = &cobra.Command{
@@ -44,6 +45,7 @@ func init() {
 	exporterCmd.PersistentFlags().DurationVar(&airUnitUpdateInterval, "air-unit-update-interval", time.Second, "How often to publish frames for air units")
 	exporterCmd.PersistentFlags().DurationVar(&surfaceUnitUpdateInterval, "surface-unit-update-interval", time.Second, "How often to publish frames for surface units")
 	exporterCmd.PersistentFlags().DurationVar(&weaponUpdateInterval, "weapon-update-interval", time.Second, "How often to publish frames for weapons")
+	exporterCmd.PersistentFlags().BoolVar(&publishStdout, "publish-stdout", false, "Publish updates to stdout (useful for debugging)")
 	exporterCmd.MarkPersistentFlagRequired("password")
 }
 
@@ -95,7 +97,9 @@ func Run(cmd *cobra.Command, args []string) error {
 			case <-ctx.Done():
 				return
 			case message := <-messages:
-				fmt.Println(message)
+				if publishStdout {
+					fmt.Println(message)
+				}
 			}
 		}
 	}()
