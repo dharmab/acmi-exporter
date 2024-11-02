@@ -10,6 +10,7 @@ import (
 
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/coalition"
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/common"
+	"github.com/DCS-gRPC/go-bindings/dcs/v0/hook"
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/mission"
 	"github.com/dharmab/goacmi/objects"
 	"github.com/dharmab/goacmi/properties"
@@ -28,15 +29,18 @@ type Payload struct {
 type Streamer struct {
 	missionServiceClient   mission.MissionServiceClient
 	coalitionServiceClient coalition.CoalitionServiceClient
+	hookServiceClient      hook.HookServiceClient
 }
 
 func New(
 	missionServiceClient mission.MissionServiceClient,
 	coalitionServiceClient coalition.CoalitionServiceClient,
+	hookServiceClient hook.HookServiceClient,
 ) *Streamer {
 	return &Streamer{
 		missionServiceClient:   missionServiceClient,
 		coalitionServiceClient: coalitionServiceClient,
+		hookServiceClient:      hookServiceClient,
 	}
 }
 
@@ -70,7 +74,14 @@ func (s *Streamer) Stream(ctx context.Context, updates chan<- Payload, airUpdate
 
 func (s *Streamer) GetGlobalObject(ctx context.Context) (*objects.Object, error) {
 	global := objects.New(0)
-	global.SetProperty(properties.Title, "test mission please ignore")
+
+	resp, err := s.hookServiceClient.GetMissionName(ctx, &hook.GetMissionNameRequest{})
+	if err != nil {
+		log.Error().Err(err).Msg("failed to get mission name")
+	} else {
+		global.SetProperty(properties.Title, resp.GetName())
+	}
+
 	refTime, err := s.GetStartTime(ctx)
 	if err != nil {
 		return nil, err
@@ -83,8 +94,6 @@ func (s *Streamer) GetGlobalObject(ctx context.Context) (*objects.Object, error)
 	global.SetProperty(properties.RecordingTime, recTime)
 	global.SetProperty(properties.DataRecorder, "acmi-exporter")
 	global.SetProperty(properties.DataSource, "DCS World")
-	global.SetProperty(properties.Author, "xxx")
-	global.SetProperty(properties.Comments, "xxx")
 	global.SetProperty(properties.ReferenceLongitude, "0")
 	global.SetProperty(properties.ReferenceLatitude, "0")
 

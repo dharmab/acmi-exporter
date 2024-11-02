@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/coalition"
+	"github.com/DCS-gRPC/go-bindings/dcs/v0/hook"
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/mission"
 	"github.com/dharmab/acmi-exporter/pkg/streamer"
 	"github.com/dharmab/goacmi/objects"
@@ -65,8 +66,9 @@ func Run(cmd *cobra.Command, args []string) error {
 	}
 	missionServiceClient := mission.NewMissionServiceClient(grpcClient)
 	coalitionServiceClient := coalition.NewCoalitionServiceClient(grpcClient)
+	hookServiceClient := hook.NewHookServiceClient(grpcClient)
 
-	dataStreamer := streamer.New(missionServiceClient, coalitionServiceClient)
+	dataStreamer := streamer.New(missionServiceClient, coalitionServiceClient, hookServiceClient)
 
 	updates := make(chan streamer.Payload)
 	messages := make(chan string)
@@ -149,8 +151,6 @@ func publishGlobals(global *objects.Object, messages chan<- string) error {
 		properties.Title,
 		properties.DataRecorder,
 		properties.DataSource,
-		properties.Author,
-		properties.Comments,
 		properties.ReferenceLongitude,
 		properties.ReferenceLatitude,
 	} {
