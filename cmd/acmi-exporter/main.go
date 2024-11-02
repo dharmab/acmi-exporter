@@ -104,10 +104,25 @@ func Run(cmd *cobra.Command, args []string) error {
 	}
 
 	if publishToFolder != "" {
+		folder, err := filepath.Abs(publishToFolder)
+		if err != nil {
+			return fmt.Errorf("failed to get absolute path to folder: %w", err)
+		}
+		if _, err := os.Stat(folder); os.IsNotExist(err) {
+			if err := os.MkdirAll(folder, 0755); err != nil {
+				return fmt.Errorf("failed to create folder: %w", err)
+			}
+		}
+		title, err := dataStreamer.GetMissionName(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get mission name: %w", err)
+		}
+
+		acmiFile := fmt.Sprintf("%s/%s %s.acmi", folder, title, time.Now().Format("2006-01-02-150405"))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := PublishToFolder(ctx, publishToFolder, messages); err != nil {
+			if err := PublishToFile(ctx, acmiFile, messages); err != nil {
 				log.Error().Err(err).Msg("Failed to publish to folder")
 			}
 		}()
@@ -135,21 +150,8 @@ func PublishToStdout(ctx context.Context, messages <-chan string) {
 	}
 }
 
-func PublishToFolder(ctx context.Context, folder string, messages <-chan string) error {
-	// create folder if it doesn't exist
-	folder, err := filepath.Abs(folder)
-	if err != nil {
-		return fmt.Errorf("failed to get absolute path to folder: %w", err)
-	}
-	if _, err := os.Stat(folder); os.IsNotExist(err) {
-		if err := os.MkdirAll(folder, 0755); err != nil {
-			return fmt.Errorf("failed to create folder: %w", err)
-		}
-	}
-	// get absolute path to file
-
-	acmiFile := fmt.Sprintf("%s/%s.acmi", folder, "test1")
-	file, err := os.Create(acmiFile)
+func PublishToFile(ctx context.Context, path string, messages <-chan string) error {
+	file, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}

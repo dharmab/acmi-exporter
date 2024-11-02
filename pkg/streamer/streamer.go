@@ -79,12 +79,11 @@ func (s *Streamer) Stream(ctx context.Context, updates chan<- Payload, airUpdate
 func (s *Streamer) GetGlobalObject(ctx context.Context) (*objects.Object, error) {
 	global := objects.New(0)
 
-	resp, err := s.hookServiceClient.GetMissionName(ctx, &hook.GetMissionNameRequest{})
+	title, err := s.GetMissionName(ctx)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to get mission name")
-	} else {
-		global.SetProperty(properties.Title, resp.GetName())
+		return nil, err
 	}
+	global.SetProperty(properties.Title, title)
 
 	refTime, err := s.GetStartTime(ctx)
 	if err != nil {
@@ -96,12 +95,21 @@ func (s *Streamer) GetGlobalObject(ctx context.Context) (*objects.Object, error)
 		return nil, err
 	}
 	global.SetProperty(properties.RecordingTime, recTime)
+
 	global.SetProperty(properties.DataRecorder, "acmi-exporter")
 	global.SetProperty(properties.DataSource, "DCS World")
 	global.SetProperty(properties.ReferenceLongitude, "0")
 	global.SetProperty(properties.ReferenceLatitude, "0")
 
 	return global, nil
+}
+
+func (s *Streamer) GetMissionName(ctx context.Context) (string, error) {
+	resp, err := s.hookServiceClient.GetMissionName(ctx, &hook.GetMissionNameRequest{})
+	if err != nil {
+		return "", err
+	}
+	return resp.GetName(), nil
 }
 
 func (s *Streamer) GetStartTime(ctx context.Context) (string, error) {
