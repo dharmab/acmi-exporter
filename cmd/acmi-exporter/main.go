@@ -41,9 +41,9 @@ func init() {
 	exporterCmd.PersistentFlags().StringVar(&telemetryAddress, "telemetry-address", "localhost:42675", "Address to serve telemetry on")
 	exporterCmd.PersistentFlags().StringVar(&hostname, "hostname", "acmi-exporter", "ACMI protocol hostname")
 	exporterCmd.PersistentFlags().StringVar(&password, "password", "", "ACMI protocol password")
-	exporterCmd.PersistentFlags().DurationVar(&airUnitUpdateInterval, "air-unit-update-interval", time.Second/10, "How often to publish frames for air units")
+	exporterCmd.PersistentFlags().DurationVar(&airUnitUpdateInterval, "air-unit-update-interval", time.Second, "How often to publish frames for air units")
 	exporterCmd.PersistentFlags().DurationVar(&surfaceUnitUpdateInterval, "surface-unit-update-interval", time.Second, "How often to publish frames for surface units")
-	exporterCmd.PersistentFlags().DurationVar(&weaponUpdateInterval, "weapon-update-interval", time.Second/8, "How often to publish frames for weapons")
+	exporterCmd.PersistentFlags().DurationVar(&weaponUpdateInterval, "weapon-update-interval", time.Second, "How often to publish frames for weapons")
 	exporterCmd.MarkPersistentFlagRequired("password")
 }
 
