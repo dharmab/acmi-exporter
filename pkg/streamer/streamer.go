@@ -48,7 +48,7 @@ func (s *Streamer) Stream(ctx context.Context, updates chan<- Payload, airUpdate
 	var wg sync.WaitGroup
 	streamCtx, cancel := context.WithCancel(ctx)
 
-	wg.Add(4)
+	wg.Add(5)
 	go func() {
 		defer wg.Done()
 		defer cancel()
@@ -69,7 +69,11 @@ func (s *Streamer) Stream(ctx context.Context, updates chan<- Payload, airUpdate
 		defer cancel()
 		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_SHIP, updates, surfaceUpdateInterval)
 	}()
-	// stream TODO global object
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_UNSPECIFIED, updates, surfaceUpdateInterval)
+	}()
 }
 
 func (s *Streamer) GetGlobalObject(ctx context.Context) (*objects.Object, error) {

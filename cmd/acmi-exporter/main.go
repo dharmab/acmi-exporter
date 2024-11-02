@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -29,6 +31,7 @@ var (
 	surfaceUnitUpdateInterval time.Duration
 	weaponUpdateInterval      time.Duration
 	publishStdout             bool
+	publishToFolder           string
 )
 
 var exporterCmd = &cobra.Command{
@@ -47,6 +50,7 @@ func init() {
 	exporterCmd.PersistentFlags().DurationVar(&surfaceUnitUpdateInterval, "surface-unit-update-interval", time.Second, "How often to publish frames for surface units")
 	exporterCmd.PersistentFlags().DurationVar(&weaponUpdateInterval, "weapon-update-interval", time.Second, "How often to publish frames for weapons")
 	exporterCmd.PersistentFlags().BoolVar(&publishStdout, "publish-stdout", false, "Publish updates to stdout (useful for debugging)")
+	exporterCmd.PersistentFlags().StringVar(&publishToFolder, "publish-to-folder", "", "Publish updates as a new file in the given folder")
 	exporterCmd.MarkPersistentFlagRequired("password")
 }
 
@@ -91,20 +95,23 @@ func Run(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case message := <-messages:
-				if publishStdout {
-					fmt.Println(message)
-				}
+	if publishStdout {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			PublishToStdout(ctx, messages)
+		}()
+	}
+
+	if publishToFolder != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := PublishToFolder(ctx, publishToFolder, messages); err != nil {
+				log.Error().Err(err).Msg("Failed to publish to folder")
 			}
-		}
-	}()
+		}()
+	}
 
 	wg.Add(1)
 	go func() {
@@ -115,6 +122,51 @@ func Run(cmd *cobra.Command, args []string) error {
 	<-ctx.Done()
 	wg.Wait()
 	return nil
+}
+
+func PublishToStdout(ctx context.Context, messages <-chan string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case message := <-messages:
+			fmt.Println(message)
+		}
+	}
+}
+
+func PublishToFolder(ctx context.Context, folder string, messages <-chan string) error {
+	// create folder if it doesn't exist
+	folder, err := filepath.Abs(folder)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path to folder: %w", err)
+	}
+	if _, err := os.Stat(folder); os.IsNotExist(err) {
+		if err := os.MkdirAll(folder, 0755); err != nil {
+			return fmt.Errorf("failed to create folder: %w", err)
+		}
+	}
+	// get absolute path to file
+
+	acmiFile := fmt.Sprintf("%s/%s.acmi", folder, "test1")
+	file, err := os.Create(acmiFile)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer file.Close()
+
+	file.WriteString("FileType=text/acmi/tacview\nFileVersion=2.2\n")
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case message := <-messages:
+			line := fmt.Sprintf("%s\n", message)
+			if _, err := file.WriteString(line); err != nil {
+				return fmt.Errorf("failed to write message to file: %w", err)
+			}
+		}
+	}
 }
 
 func Process(ctx context.Context, global *objects.Object, initialObjects []*objects.Object, updates <-chan streamer.Payload, messages chan<- string) error {
