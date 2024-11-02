@@ -2,7 +2,8 @@ package streamer
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -10,78 +11,156 @@ import (
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/coalition"
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/common"
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/mission"
-	"github.com/DCS-gRPC/go-bindings/dcs/v0/unit"
-	"github.com/dharmab/acmi-exporter/pkg/acmi/objects"
-	"github.com/dharmab/acmi-exporter/pkg/acmi/properties"
-	"github.com/dharmab/acmi-exporter/pkg/acmi/tags"
+	"github.com/dharmab/goacmi/objects"
+	"github.com/dharmab/goacmi/properties"
+	"github.com/dharmab/goacmi/properties/coalitions"
+	"github.com/dharmab/goacmi/properties/colors"
+	"github.com/dharmab/goacmi/tags"
+	measure "github.com/martinlindhe/unit"
 	"github.com/rs/zerolog/log"
-	"google.golang.org/grpc"
 )
 
+type Payload struct {
+	Update      *objects.Update
+	MissionTime time.Duration
+}
+
 type Streamer struct {
-	missionService   mission.MissionServiceClient
-	coalitionService coalition.CoalitionServiceClient
-	unitService      unit.UnitServiceClient
-	interval         time.Duration
-	globalObject     *objects.Object
-	objects          map[uint32]*objects.Object
-	objectsLock      sync.RWMutex
+	missionServiceClient   mission.MissionServiceClient
+	coalitionServiceClient coalition.CoalitionServiceClient
 }
 
-func NewStreamer(address string, interval time.Duration) (*Streamer, error) {
-	grpcClient, err := grpc.NewClient(address)
-	if err != nil {
-		return nil, err
-	}
-	globalObject := objects.NewObject(0)
-	globalObject.SetProperty(properties.DataSource, "DCS World")
-	globalObject.SetProperty(properties.DataRecorder, "acmi-exporter")
-	globalObject.SetProperty(properties.Title, "test mission please ignore")
-
+func New(
+	missionServiceClient mission.MissionServiceClient,
+	coalitionServiceClient coalition.CoalitionServiceClient,
+) *Streamer {
 	return &Streamer{
-		missionService:   mission.NewMissionServiceClient(grpcClient),
-		coalitionService: coalition.NewCoalitionServiceClient(grpcClient),
-		unitService:      unit.NewUnitServiceClient(grpcClient),
-		interval:         interval,
-		globalObject:     objects.NewObject(0),
-		objects:          make(map[uint32]*objects.Object),
-	}, nil
+		missionServiceClient:   missionServiceClient,
+		coalitionServiceClient: coalitionServiceClient,
+	}
 }
 
-func (s *Streamer) Stream(ctx context.Context, updates chan<- *objects.Object, removals chan<- uint32) {
+func (s *Streamer) Stream(ctx context.Context, updates chan<- Payload, airUpdateInterval, surfaceUpdateInterval, weaponUpdateInterval time.Duration) {
 	var wg sync.WaitGroup
 	streamCtx, cancel := context.WithCancel(ctx)
 
-	wg.Add(2)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.streamUnits(streamCtx, removals)
+		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_AIRPLANE, updates, airUpdateInterval)
 	}()
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				cancel()
-				wg.Wait()
-				return
-			default:
-				time.Sleep(s.interval)
-				updates <- s.globalObject
-			}
-		}
+		defer wg.Done()
+		defer cancel()
+		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_HELICOPTER, updates, airUpdateInterval)
 	}()
-	wg.Wait()
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_GROUND, updates, surfaceUpdateInterval)
+	}()
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_SHIP, updates, surfaceUpdateInterval)
+	}()
+	// stream TODO global object
 }
 
-func (s *Streamer) streamUnits(ctx context.Context, removals chan<- uint32) {
-	rate := uint32(s.interval.Seconds())
-	request := &mission.StreamUnitsRequest{
-		PollRate:   &rate,
-		MaxBackoff: &rate,
-		Category:   common.GroupCategory_GROUP_CATEGORY_UNSPECIFIED,
+func (s *Streamer) GetGlobalObject(ctx context.Context) (*objects.Object, error) {
+	global := objects.New(0)
+	global.SetProperty(properties.Title, "test mission please ignore")
+	refTime, err := s.GetStartTime(ctx)
+	if err != nil {
+		return nil, err
 	}
-	stream, err := s.missionService.StreamUnits(ctx, request)
+	global.SetProperty(properties.ReferenceTime, refTime)
+	recTime, err := s.GetCurrentTime(ctx)
+	if err != nil {
+		return nil, err
+	}
+	global.SetProperty(properties.RecordingTime, recTime)
+	global.SetProperty(properties.DataRecorder, "acmi-exporter")
+	global.SetProperty(properties.DataSource, "DCS World")
+	global.SetProperty(properties.Author, "xxx")
+	global.SetProperty(properties.Comments, "xxx")
+	global.SetProperty(properties.ReferenceLongitude, "0")
+	global.SetProperty(properties.ReferenceLatitude, "0")
+
+	return global, nil
+}
+
+func (s *Streamer) GetStartTime(ctx context.Context) (string, error) {
+	resp, err := s.missionServiceClient.GetScenarioStartTime(ctx, &mission.GetScenarioStartTimeRequest{})
+	if err != nil {
+		return "", err
+	}
+	return resp.GetDatetime(), nil
+}
+
+func (s *Streamer) GetCurrentTime(ctx context.Context) (string, error) {
+	resp, err := s.missionServiceClient.GetScenarioCurrentTime(ctx, &mission.GetScenarioCurrentTimeRequest{})
+	if err != nil {
+		return "", err
+	}
+	return resp.GetDatetime(), nil
+}
+
+const (
+	blueBullseyeID    = 0x40000001
+	neutralBullseyeID = 0x40000002
+	redBullseyeID     = 0x40000003
+)
+
+func (s Streamer) GetBullseyes(ctx context.Context) ([]*objects.Object, error) {
+	bullseyes := make([]*objects.Object, 0)
+	for _, c := range []common.Coalition{common.Coalition_COALITION_BLUE, common.Coalition_COALITION_NEUTRAL, common.Coalition_COALITION_RED} {
+		resp, err := s.coalitionServiceClient.GetBullseye(ctx, &coalition.GetBullseyeRequest{Coalition: c})
+		if err != nil {
+			return nil, err
+		}
+		bullseyes = append(bullseyes, s.buildBullseye(resp, c))
+	}
+	return bullseyes, nil
+}
+
+func (s *Streamer) buildBullseye(resp *coalition.GetBullseyeResponse, c common.Coalition) *objects.Object {
+	if resp == nil {
+		return nil
+	}
+	bullseye := &objects.Object{
+		Properties: map[string]string{
+			properties.Type:      strings.Join([]string{"Navaid", tags.Static, tags.Bullseye}, "+"),
+			properties.Coalition: convertCoalition(c),
+			properties.Color:     coalitionColor(c),
+		},
+	}
+	if position := resp.GetPosition(); position != nil {
+		altitude := measure.Length(position.GetAlt()) * measure.Meter
+		coordinates := objects.NewCoordinates(
+			&position.Lon, &position.Lat,
+			&altitude,
+			&position.U, &position.V,
+			nil, nil, nil, nil,
+		)
+		bullseye.Properties[properties.Transform] = coordinates.Transform(0, 0)
+	}
+	switch c {
+	case common.Coalition_COALITION_RED:
+		bullseye.ID = redBullseyeID
+	case common.Coalition_COALITION_BLUE:
+		bullseye.ID = blueBullseyeID
+	case common.Coalition_COALITION_NEUTRAL:
+		bullseye.ID = neutralBullseyeID
+	}
+	return bullseye
+}
+
+func (s *Streamer) streamCategory(ctx context.Context, category common.GroupCategory, updates chan<- Payload, interval time.Duration) {
+	pollRate := uint32(interval.Seconds())
+	request := &mission.StreamUnitsRequest{PollRate: &pollRate, Category: category}
+	stream, err := s.missionServiceClient.StreamUnits(ctx, request)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to stream units")
 		return
@@ -93,101 +172,125 @@ func (s *Streamer) streamUnits(ctx context.Context, removals chan<- uint32) {
 			return
 		default:
 			response, err := stream.Recv()
+			if errors.Is(err, io.EOF) {
+				continue
+			}
 			if err != nil {
 				log.Error().Err(err).Msg("received error from units stream")
 				return
 			}
-			gone := response.GetGone()
-			if gone != nil {
-				log.Info().
-					Uint32("unitID", gone.GetId()).
-					Str("name", gone.GetName()).
-					Msg("removing unit")
-				s.removeObject(gone.GetId(), removals)
-			} else {
-				_unit := response.GetUnit()
-				logger := log.With().Uint32("unitID", _unit.GetId()).Str("name", _unit.GetName()).Logger()
-				obj := objects.NewObject(_unit.GetId())
-				obj.Time = time.Duration(response.GetTime()) * time.Second
-				obj.SetProperty(properties.Name, _unit.GetName())
-				obj.SetProperty(properties.Pilot, _unit.GetPlayerName())
-				obj.SetProperty(properties.Type, _unit.GetType())
-				obj.SetProperty(properties.CallSign, _unit.GetCallsign())
-				if _unit.GetCoalition() == common.Coalition_COALITION_RED {
-					obj.SetProperty(properties.Coalition, "Enemies")
-				} else {
-					obj.SetProperty(properties.Coalition, "Allies")
-				}
-
-				group := _unit.GetGroup()
-				if group != nil {
-					switch group.GetCategory() {
-					case common.GroupCategory_GROUP_CATEGORY_AIRPLANE:
-						obj.SetProperty(properties.Category, fmt.Sprintf("%s+%s", tags.Air, tags.FixedWing))
-					case common.GroupCategory_GROUP_CATEGORY_HELICOPTER:
-						obj.SetProperty(properties.Category, fmt.Sprintf("%s+%s", tags.Air, tags.Rotorcraft))
-					case common.GroupCategory_GROUP_CATEGORY_TRAIN:
-						obj.SetProperty(properties.Category, tags.Ground)
-					case common.GroupCategory_GROUP_CATEGORY_GROUND:
-						obj.SetProperty(properties.Category, tags.Ground)
-					case common.GroupCategory_GROUP_CATEGORY_SHIP:
-						obj.SetProperty(properties.Category, tags.Sea)
-					}
-				}
-
-				position := _unit.GetPosition()
-				if position == nil {
-					logger.Warn().Msg("unit has no position")
-				}
-				orientation := _unit.GetOrientation()
-				if orientation == nil {
-					logger.Warn().Msg("unit has no orientation")
-				}
-				obj.SetProperty(properties.Transform, transform(position, orientation))
-
-				s.updateObject(obj)
+			updates <- Payload{
+				Update:      s.buildUpdate(response),
+				MissionTime: time.Second * time.Duration(response.GetTime()),
 			}
 		}
 	}
 }
 
-func transform(position *common.Position, orientation *common.Orientation) string {
-	var longitude, latitude, altitude, roll, pitch, yaw, u, v, heading string
-	if position != nil {
-		longitude = fmt.Sprintf("%.6f", position.GetLon())
-		latitude = fmt.Sprintf("%.6f", position.GetLat())
-		altitude = fmt.Sprintf("%.1f", position.GetAlt())
-		u = fmt.Sprintf("%.6f", position.GetU())
-		v = fmt.Sprintf("%.6f", position.GetV())
-	}
-	if orientation != nil {
-		roll = fmt.Sprintf("%.2f", orientation.GetRoll())
-		pitch = fmt.Sprintf("%.2f", orientation.GetPitch())
-		yaw = fmt.Sprintf("%.2f", orientation.GetYaw())
-	}
+func (s *Streamer) buildUpdate(resp *mission.StreamUnitsResponse) *objects.Update {
+	var update *objects.Update
+	if gone := resp.GetGone(); gone != nil {
+		update = &objects.Update{
+			ID:        uint64(gone.GetId()),
+			IsRemoval: true,
+		}
+	} else if _unit := resp.GetUnit(); _unit != nil {
+		update = &objects.Update{
+			ID:        uint64(_unit.GetId()),
+			IsRemoval: false,
+			Properties: map[string]string{
+				properties.Type:      s.buildType(_unit),
+				properties.Transform: s.buildCoordinates(_unit).Transform(0, 0),
+			},
+		}
 
-	coordinates := make([]string, 0)
-	if orientation != nil {
-		coordinates = append(coordinates, longitude, latitude, altitude, roll, pitch, yaw, u, v, heading)
-	} else {
-		coordinates = append(coordinates, longitude, latitude, altitude, u, v)
+		for k, v := range map[string]string{
+			properties.Name:     _unit.GetType(),
+			properties.Pilot:    _unit.GetPlayerName(),
+			properties.CallSign: _unit.GetName(),
+		} {
+			if v != "" {
+				update.Properties[k] = v
+			}
+		}
+		update.Properties[properties.Coalition] = convertCoalition(_unit.GetCoalition())
+		update.Properties[properties.Color] = coalitionColor(_unit.GetCoalition())
 	}
-	return strings.Join(coordinates, "|")
+	return update
 }
 
-func (s *Streamer) updateObject(obj *objects.Object) {
-	s.objectsLock.Lock()
-	defer s.objectsLock.Unlock()
-	s.objects[obj.ID] = obj
+func convertCoalition(c common.Coalition) string {
+	switch c {
+	case common.Coalition_COALITION_RED:
+		return coalitions.Allies.String()
+	case common.Coalition_COALITION_BLUE:
+		return coalitions.Enemies.String()
+	case common.Coalition_COALITION_NEUTRAL:
+		return coalitions.Neutrals.String()
+	}
+	return ""
 }
 
-func (s *Streamer) removeObject(id uint32, removals chan<- uint32) {
-	s.objectsLock.Lock()
-	defer s.objectsLock.Unlock()
-	delete(s.objects, id)
-	removals <- id
+func coalitionColor(c common.Coalition) string {
+	switch c {
+	case common.Coalition_COALITION_RED:
+		return colors.Red.String()
+	case common.Coalition_COALITION_BLUE:
+		return colors.Blue.String()
+	case common.Coalition_COALITION_NEUTRAL:
+		return colors.Grey.String()
+	}
+	return ""
 }
 
-func (s *Streamer) GetGlobalProperty(property string) (string, bool) {
-	return s.globalObject.GetProperty(property)
+func (s *Streamer) buildType(_unit *common.Unit) string {
+	types := []string{}
+	if group := _unit.GetGroup(); group != nil {
+		switch group.GetCategory() {
+		case common.GroupCategory_GROUP_CATEGORY_AIRPLANE:
+			types = append(types, tags.Air, tags.FixedWing)
+		case common.GroupCategory_GROUP_CATEGORY_HELICOPTER:
+			types = append(types, tags.Air, tags.Rotorcraft)
+		case common.GroupCategory_GROUP_CATEGORY_TRAIN:
+			types = append(types, tags.Ground)
+		case common.GroupCategory_GROUP_CATEGORY_GROUND:
+			types = append(types, tags.Ground)
+		case common.GroupCategory_GROUP_CATEGORY_SHIP:
+			types = append(types, tags.Sea)
+		}
+	}
+	return strings.Join(types, "+")
+}
+
+func (s *Streamer) buildCoordinates(_unit *common.Unit) *objects.Coordinates {
+	var lon, lat *float64
+	var altitude *measure.Length
+	var u, v *float64
+	if position := _unit.GetPosition(); position != nil {
+		lon = &position.Lon
+		lat = &position.Lat
+
+		a := measure.Length(position.GetAlt()) * measure.Meter
+		altitude = &a
+
+		u = &position.U
+		v = &position.V
+	}
+
+	var roll, pitch, yaw, heading *measure.Angle
+	if orientation := _unit.GetOrientation(); orientation != nil {
+		r := measure.Angle(orientation.GetRoll()) * measure.Degree
+		roll = &r
+
+		p := measure.Angle(orientation.GetPitch()) * measure.Degree
+		pitch = &p
+
+		y := measure.Angle(orientation.GetYaw()) * measure.Degree
+		yaw = &y
+
+		h := measure.Angle(orientation.GetHeading()) * measure.Degree
+		heading = &h
+	}
+
+	return objects.NewCoordinates(lon, lat, altitude, u, v, roll, pitch, yaw, heading)
 }

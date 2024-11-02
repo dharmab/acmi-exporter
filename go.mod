@@ -4,7 +4,8 @@ go 1.23.0
 
 require (
 	github.com/DCS-gRPC/go-bindings v0.7.1
-	github.com/dharmab/skyeye v0.4.0
+	github.com/dharmab/goacmi v1.0.3
+	github.com/martinlindhe/unit v0.0.0-20230420213220-4adfd7d0a0d6
 	github.com/rs/zerolog v1.33.0
 	github.com/spf13/cobra v1.8.1
 	google.golang.org/grpc v1.66.0
