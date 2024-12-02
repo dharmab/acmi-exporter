@@ -11,9 +11,9 @@ import (
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/coalition"
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/hook"
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/mission"
+	"github.com/dharmab/acmi-exporter/pkg/publishers"
 	"github.com/dharmab/acmi-exporter/pkg/streamer"
 	"github.com/dharmab/goacmi/objects"
-	"github.com/dharmab/goacmi/properties"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -76,30 +76,36 @@ func Run(cmd *cobra.Command, args []string) error {
 
 	updates := make(chan streamer.Payload)
 	messages := make(chan string)
+	consumers := []chan string{}
+	consumersLock := sync.RWMutex{}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		globalObject, err := dataStreamer.GetGlobalObject(ctx)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to get global object")
-			return
-		}
-		bullseyes, err := dataStreamer.GetBullseyes(ctx)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to get bullseyes")
-			return
-		}
-		if err := Process(ctx, globalObject, bullseyes, updates, messages); err != nil {
-			log.Error().Err(err).Msg("Failed to process updates")
-		}
-	}()
+	globalObject, err := dataStreamer.GetGlobalObject(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get global object: %w", err)
+	}
+	bullseyes, err := dataStreamer.GetBullseyes(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get bullseyes: %w", err)
+	}
+	initials := &publishers.Initials{
+		Global:    globalObject,
+		Bullseyes: bullseyes,
+	}
 
 	if publishStdout {
+		ch := make(chan string)
+		func() {
+			consumersLock.Lock()
+			defer consumersLock.Unlock()
+			consumers = append(consumers, ch)
+		}()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			PublishToStdout(ctx, messages)
+			publisher := publishers.StdoutPublisher{}
+			if err := publisher.Publish(ctx, initials, ch); err != nil {
+				log.Error().Err(err).Msg("Failed to publish to stdout")
+			}
 		}()
 	}
 
@@ -113,16 +119,28 @@ func Run(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("failed to create folder: %w", err)
 			}
 		}
+
 		title, err := dataStreamer.GetMissionName(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get mission name: %w", err)
 		}
 
-		acmiFile := fmt.Sprintf("%s/%s %s.acmi", folder, title, time.Now().Format("2006-01-02-150405"))
+		publisher := publishers.FilePublisher{
+			Folder: folder,
+			Title:  title,
+		}
+
+		ch := make(chan string)
+		func() {
+			consumersLock.Lock()
+			defer consumersLock.Unlock()
+			consumers = append(consumers, ch)
+		}()
+
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := PublishToFile(ctx, acmiFile, messages); err != nil {
+			if err := publisher.Publish(ctx, initials, ch); err != nil {
 				log.Error().Err(err).Msg("Failed to publish to folder")
 			}
 		}()
@@ -131,7 +149,53 @@ func Run(cmd *cobra.Command, args []string) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		publisher := publishers.Server{
+			Address:  telemetryAddress,
+			Password: password,
+		}
+		ch := make(chan string)
+		func() {
+			consumersLock.Lock()
+			defer consumersLock.Unlock()
+			consumers = append(consumers, ch)
+		}()
+		if err := publisher.Publish(ctx, initials, ch); err != nil {
+			log.Error().Err(err).Msg("Failed to publish to server")
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case message := <-messages:
+				func() {
+					consumersLock.RLock()
+					defer consumersLock.RUnlock()
+					log.Debug().Str("message", message).Msg("Muxing message")
+					for _, ch := range consumers {
+						ch <- message
+					}
+				}()
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		dataStreamer.Stream(ctx, updates, airUnitUpdateInterval, surfaceUnitUpdateInterval, weaponUpdateInterval)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := Process(ctx, globalObject, bullseyes, updates, messages); err != nil {
+			log.Error().Err(err).Msg("Failed to process updates")
+		}
 	}()
 
 	<-ctx.Done()
@@ -139,51 +203,8 @@ func Run(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func PublishToStdout(ctx context.Context, messages <-chan string) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case message := <-messages:
-			fmt.Println(message)
-		}
-	}
-}
-
-func PublishToFile(ctx context.Context, path string, messages <-chan string) error {
-	file, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
-	}
-	defer file.Close()
-
-	file.WriteString("FileType=text/acmi/tacview\nFileVersion=2.2\n")
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case message := <-messages:
-			line := fmt.Sprintf("%s\n", message)
-			if _, err := file.WriteString(line); err != nil {
-				return fmt.Errorf("failed to write message to file: %w", err)
-			}
-		}
-	}
-}
-
 func Process(ctx context.Context, global *objects.Object, initialObjects []*objects.Object, updates <-chan streamer.Payload, messages chan<- string) error {
 	frameTime := time.Duration(0)
-	if err := publishGlobals(global, messages); err != nil {
-		return fmt.Errorf("failed to publish globals: %w", err)
-	}
-	for _, obj := range initialObjects {
-		update := &objects.Update{
-			ID:         obj.ID,
-			IsRemoval:  false,
-			Properties: obj.Properties,
-		}
-		messages <- update.String()
-	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -194,30 +215,7 @@ func Process(ctx context.Context, global *objects.Object, initialObjects []*obje
 				messages <- fmt.Sprintf("#%.2f", frameTime.Seconds())
 			}
 			messages <- update.Update.String()
+			log.Debug().Str("update", update.Update.String()).Msg("Processed update")
 		}
 	}
-}
-
-func publishGlobals(global *objects.Object, messages chan<- string) error {
-	for _, propName := range []string{
-		properties.ReferenceTime,
-		properties.RecordingTime,
-		properties.Title,
-		properties.DataRecorder,
-		properties.DataSource,
-		properties.ReferenceLongitude,
-		properties.ReferenceLatitude,
-	} {
-		value, ok := global.GetProperty(propName)
-		if !ok {
-			return fmt.Errorf("missing global property %q", propName)
-		}
-		update := objects.Update{
-			ID:         global.ID,
-			IsRemoval:  false,
-			Properties: map[string]string{propName: value},
-		}
-		messages <- update.String()
-	}
-	return nil
 }

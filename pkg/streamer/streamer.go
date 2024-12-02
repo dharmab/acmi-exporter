@@ -53,6 +53,7 @@ func (s *Streamer) Stream(ctx context.Context, updates chan<- Payload, airUpdate
 		defer wg.Done()
 		defer cancel()
 		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_AIRPLANE, updates, airUpdateInterval)
+		log.Info().Msg("streaming complete")
 	}()
 	go func() {
 		defer wg.Done()
@@ -181,6 +182,7 @@ func (s *Streamer) buildBullseye(resp *coalition.GetBullseyeResponse, c common.C
 func (s *Streamer) streamCategory(ctx context.Context, category common.GroupCategory, updates chan<- Payload, interval time.Duration) {
 	pollRate := uint32(interval.Seconds())
 	request := &mission.StreamUnitsRequest{PollRate: &pollRate, Category: category}
+	log.Info().Str("category", category.String()).Msg("streaming units")
 	stream, err := s.missionServiceClient.StreamUnits(ctx, request)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to stream units")
@@ -200,10 +202,12 @@ func (s *Streamer) streamCategory(ctx context.Context, category common.GroupCate
 				log.Error().Err(err).Msg("received error from units stream")
 				return
 			}
-			updates <- Payload{
+			payload := Payload{
 				Update:      s.buildUpdate(response),
 				MissionTime: time.Second * time.Duration(response.GetTime()),
 			}
+			log.Debug().Str("update", payload.Update.String()).Msg("prepared update")
+			updates <- payload
 		}
 	}
 }
