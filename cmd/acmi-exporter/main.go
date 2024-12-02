@@ -50,7 +50,6 @@ func init() {
 	exporterCmd.PersistentFlags().DurationVar(&weaponUpdateInterval, "weapon-update-interval", time.Second, "How often to publish frames for weapons")
 	exporterCmd.PersistentFlags().BoolVar(&publishStdout, "publish-stdout", false, "Publish updates to stdout (useful for debugging)")
 	exporterCmd.PersistentFlags().StringVar(&publishToFolder, "publish-to-folder", "", "Publish updates as a new file in the given folder")
-	exporterCmd.MarkPersistentFlagRequired("password")
 }
 
 func main() {

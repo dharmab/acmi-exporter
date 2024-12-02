@@ -181,12 +181,24 @@ func (s *Streamer) buildBullseye(resp *coalition.GetBullseyeResponse, c common.C
 func (s *Streamer) streamCategory(ctx context.Context, category common.GroupCategory, updates chan<- Payload, interval time.Duration) {
 	pollRate := uint32(interval.Seconds())
 	request := &mission.StreamUnitsRequest{PollRate: &pollRate, Category: category}
-	stream, err := s.missionServiceClient.StreamUnits(ctx, request)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to stream units")
-		return
+	for {
+		nextAttempt := time.Now().Add(interval)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			time.Sleep(time.Until(nextAttempt))
+			stream, err := s.missionServiceClient.StreamUnits(ctx, request)
+			if err != nil {
+				log.Error().Err(err).Msg("failed to stream units")
+				continue
+			}
+			s.receive(ctx, stream, updates)
+		}
 	}
+}
 
+func (s *Streamer) receive(ctx context.Context, stream mission.MissionService_StreamUnitsClient, updates chan<- Payload) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -194,17 +206,16 @@ func (s *Streamer) streamCategory(ctx context.Context, category common.GroupCate
 		default:
 			response, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
-				continue
+				return
 			}
 			if err != nil {
 				log.Error().Err(err).Msg("received error from units stream")
 				return
 			}
-			payload := Payload{
+			updates <- Payload{
 				Update:      s.buildUpdate(response),
 				MissionTime: time.Second * time.Duration(response.GetTime()),
 			}
-			updates <- payload
 		}
 	}
 }
