@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dharmab/skyeye/pkg/telemetry"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -93,6 +94,7 @@ type handler struct {
 }
 
 func (h *handler) handle(conn net.Conn, initials InitialsProvider) {
+	logger := log.With().Str("remote", conn.RemoteAddr().String()).Logger()
 	timeout := time.After(30 * time.Second)
 	initialLines := make([]string, 0)
 
@@ -111,10 +113,12 @@ func (h *handler) handle(conn net.Conn, initials InitialsProvider) {
 	}
 
 	if err := conn.SetDeadline(time.Now().Add(60 * time.Second)); err != nil {
-		log.Error().Err(err).Msg("failed to set deadline")
+		logger.Error().Err(err).Msg("failed to set deadline")
 		return
 	}
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+
+	logger.Info().Msg("negotiating handshake")
 	serverHandshake := strings.Join([]string{
 		"XtraLib.Stream.0",
 		"Tacview.RealTimeTelemetry.0",
@@ -122,56 +126,58 @@ func (h *handler) handle(conn net.Conn, initials InitialsProvider) {
 	}, "\n") + string(rune(0))
 
 	if _, err := rw.WriteString(serverHandshake); err != nil {
-		log.Error().Err(err).Msg("failed to write host handshake")
+		logger.Error().Err(err).Msg("failed to write host handshake")
 		return
 	}
 	if err := rw.Flush(); err != nil {
-		log.Error().Err(err).Msg("failed to flush writer during handshake")
+		logger.Error().Err(err).Msg("failed to flush writer during handshake")
 		return
 	}
 
 	packet, err := rw.ReadString(0)
 	if err != nil {
-		log.Warn().Err(err).Msg("failed to read client handshake")
+		logger.Warn().Err(err).Msg("failed to read client handshake")
 		return
 	}
-	if !h.authorize(packet) {
-		log.Warn().Msg("client handshake failed authorization")
+	if !h.authorize(packet, &logger) {
+		logger.Warn().Msg("client handshake failed authorization")
 		return
 	}
 
+	logger.Info().Msg("publishing telemetry")
+
 	for _, line := range initialLines {
 		if _, err := rw.WriteString(line + "\n"); err != nil {
-			log.Error().Err(err).Msg("failed to write initial line")
+			logger.Error().Err(err).Msg("failed to write initial line")
 			return
 		}
 		if err = rw.Flush(); err != nil {
-			log.Error().Err(err).Msg("failed to flush writer")
+			logger.Error().Err(err).Msg("failed to flush writer")
 			return
 		}
 	}
 
 	for message, ok := <-h.receiver; ok; {
 		if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			log.Error().Err(err).Msg("failed to set write deadline")
+			logger.Error().Err(err).Msg("failed to set write deadline")
 			return
 		}
 		if _, err := rw.WriteString(message + "\n"); err != nil {
-			log.Error().Err(err).Msg("failed to write message")
+			logger.Error().Err(err).Msg("failed to write message")
 			return
 		}
 		if err := rw.Flush(); err != nil {
-			log.Error().Err(err).Msg("failed to flush writer")
+			logger.Error().Err(err).Msg("failed to flush writer")
 			return
 		}
 	}
 }
 
-func (h *handler) authorize(packet string) bool {
+func (h *handler) authorize(packet string, logger *zerolog.Logger) bool {
 	handshake, err := telemetry.DecodeClientHandshake(packet)
 
 	if err != nil {
-		log.Warn().Err(err).Msg("failed to decode client handshake")
+		logger.Warn().Err(err).Msg("failed to decode client handshake")
 		return false
 	}
 	ok := handshake.PasswordHash == h.hash()

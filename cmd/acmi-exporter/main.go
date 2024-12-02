@@ -62,6 +62,7 @@ func Run(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 	wg := &sync.WaitGroup{}
 
+	log.Info().Str("address", grpcAddress).Msg("Connecting to gRPC server")
 	grpcClient, err := grpc.NewClient(grpcAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return fmt.Errorf("failed to create gRPC client: %w", err)
@@ -77,10 +78,13 @@ func Run(cmd *cobra.Command, args []string) error {
 	consumers := []chan string{}
 	consumersLock := sync.RWMutex{}
 
+	// TODO Reset when the mission changes or restarts
+	log.Info().Msg("reading global properties")
 	globalObject, err := dataStreamer.GetGlobalObject(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get global object: %w", err)
 	}
+	log.Info().Msg("reading bullseyes")
 	bullseyes, err := dataStreamer.GetBullseyes(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get bullseyes: %w", err)

@@ -52,27 +52,27 @@ func (s *Streamer) Stream(ctx context.Context, updates chan<- Payload, airUpdate
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_AIRPLANE, updates, airUpdateInterval)
+		s.streamUnits(streamCtx, common.GroupCategory_GROUP_CATEGORY_AIRPLANE, updates, airUpdateInterval)
 	}()
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_HELICOPTER, updates, airUpdateInterval)
+		s.streamUnits(streamCtx, common.GroupCategory_GROUP_CATEGORY_HELICOPTER, updates, airUpdateInterval)
 	}()
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_GROUND, updates, surfaceUpdateInterval)
+		s.streamUnits(streamCtx, common.GroupCategory_GROUP_CATEGORY_GROUND, updates, surfaceUpdateInterval)
 	}()
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_SHIP, updates, surfaceUpdateInterval)
+		s.streamUnits(streamCtx, common.GroupCategory_GROUP_CATEGORY_SHIP, updates, surfaceUpdateInterval)
 	}()
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		s.streamCategory(streamCtx, common.GroupCategory_GROUP_CATEGORY_UNSPECIFIED, updates, surfaceUpdateInterval)
+		s.streamUnits(streamCtx, common.GroupCategory_GROUP_CATEGORY_UNSPECIFIED, updates, surfaceUpdateInterval)
 	}()
 }
 
@@ -178,7 +178,7 @@ func (s *Streamer) buildBullseye(resp *coalition.GetBullseyeResponse, c common.C
 	return bullseye
 }
 
-func (s *Streamer) streamCategory(ctx context.Context, category common.GroupCategory, updates chan<- Payload, interval time.Duration) {
+func (s *Streamer) streamUnits(ctx context.Context, category common.GroupCategory, updates chan<- Payload, interval time.Duration) {
 	pollRate := uint32(interval.Seconds())
 	request := &mission.StreamUnitsRequest{PollRate: &pollRate, Category: category}
 	for {
@@ -188,17 +188,20 @@ func (s *Streamer) streamCategory(ctx context.Context, category common.GroupCate
 			return
 		default:
 			time.Sleep(time.Until(nextAttempt))
+			logger := log.With().Stringer("category", category).Logger()
+			logger.Info().Msg("creating new unit stream")
 			stream, err := s.missionServiceClient.StreamUnits(ctx, request)
 			if err != nil {
 				log.Error().Err(err).Msg("failed to stream units")
 				continue
 			}
-			s.receive(ctx, stream, updates)
+			logger.Info().Msg("receving units from stream")
+			s.receiveUnitStream(ctx, stream, updates)
 		}
 	}
 }
 
-func (s *Streamer) receive(ctx context.Context, stream mission.MissionService_StreamUnitsClient, updates chan<- Payload) {
+func (s *Streamer) receiveUnitStream(ctx context.Context, stream mission.MissionService_StreamUnitsClient, updates chan<- Payload) {
 	for {
 		select {
 		case <-ctx.Done():
