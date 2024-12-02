@@ -7,13 +7,17 @@ import (
 	"time"
 )
 
+// FilePublisher publishes ACMI messages to a file.
 type FilePublisher struct {
+	// Folder where the file will be saved.
 	Folder string
-	Title  string
+	// Title of the mission.
+	Title string
 }
 
 var _ Publisher = &FilePublisher{}
 
+// Publish implements [Publisher.Publish] by writing messages to a file. The file is created in the FilePublisher's folder, and is named using the FilePublisher's title and the current date and time.
 func (p *FilePublisher) Publish(ctx context.Context, initials InitialsProvider, messages <-chan string) error {
 	path := fmt.Sprintf("%s/%s %s.acmi", p.Folder, p.Title, time.Now().Format("2006-01-02-150405"))
 	file, err := os.Create(path)

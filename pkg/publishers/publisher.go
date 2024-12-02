@@ -8,19 +8,25 @@ import (
 	"github.com/dharmab/goacmi/properties"
 )
 
+// Publisher publishes ACMI messages to an output.
 type Publisher interface {
+	// Publish is a blocking function that publishes ACMI messages to an output until the context is cancelled.
 	Publish(ctx context.Context, initials InitialsProvider, messages <-chan string) error
 }
 
+// InitialsProvider provides initial object state.
 type InitialsProvider interface {
+	// Get returns the ACMI lines for the initial global object and navaids state.
 	Get() ([]string, error)
 }
 
+// Initials implements [InitialsProvider].
 type Initials struct {
 	Global    *objects.Object
 	Bullseyes []*objects.Object
 }
 
+// Get implements [InitialsProvider.Get].
 func (i *Initials) Get() ([]string, error) {
 	lines := []string{}
 	for _, propName := range []string{

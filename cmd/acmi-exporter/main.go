@@ -13,7 +13,6 @@ import (
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/mission"
 	"github.com/dharmab/acmi-exporter/pkg/publishers"
 	"github.com/dharmab/acmi-exporter/pkg/streamer"
-	"github.com/dharmab/goacmi/objects"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -175,7 +174,6 @@ func Run(cmd *cobra.Command, args []string) error {
 				func() {
 					consumersLock.RLock()
 					defer consumersLock.RUnlock()
-					log.Debug().Str("message", message).Msg("Muxing message")
 					for _, ch := range consumers {
 						ch <- message
 					}
@@ -193,29 +191,22 @@ func Run(cmd *cobra.Command, args []string) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := Process(ctx, globalObject, bullseyes, updates, messages); err != nil {
-			log.Error().Err(err).Msg("Failed to process updates")
+		frameTime := time.Duration(0)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case update := <-updates:
+				if update.MissionTime > frameTime {
+					frameTime = update.MissionTime
+					messages <- fmt.Sprintf("#%.2f", frameTime.Seconds())
+				}
+				messages <- update.Update.String()
+			}
 		}
 	}()
 
 	<-ctx.Done()
 	wg.Wait()
 	return nil
-}
-
-func Process(ctx context.Context, global *objects.Object, initialObjects []*objects.Object, updates <-chan streamer.Payload, messages chan<- string) error {
-	frameTime := time.Duration(0)
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case update := <-updates:
-			if update.MissionTime > frameTime {
-				frameTime = update.MissionTime
-				messages <- fmt.Sprintf("#%.2f", frameTime.Seconds())
-			}
-			messages <- update.Update.String()
-			log.Debug().Str("update", update.Update.String()).Msg("Processed update")
-		}
-	}
 }

@@ -14,13 +14,17 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Server listens for real-time telemetry client connections and publishes ACMI messages over TCP.
 type Server struct {
-	Address  string
+	// Address to listen on.
+	Address string
+	// Password required for clients to connect.
 	Password string
 }
 
 var _ Publisher = &Server{}
 
+// Publish implements [Publisher.Publish] by listening for client connections on the server's address, negotiating a handshake, and writing ACMI data over TCP.
 func (s *Server) Publish(ctx context.Context, initials InitialsProvider, messages <-chan string) error {
 	listener, err := net.Listen("tcp", s.Address)
 	if err != nil {
@@ -136,9 +140,7 @@ func (h *handler) handle(conn net.Conn, initials InitialsProvider) {
 		return
 	}
 
-	log.Info().Strs("lines", initialLines).Msg("writing initial lines")
 	for _, line := range initialLines {
-		log.Info().Str("line", line).Msg("writing initial line")
 		if _, err := rw.WriteString(line + "\n"); err != nil {
 			log.Error().Err(err).Msg("failed to write initial line")
 			return
@@ -148,16 +150,18 @@ func (h *handler) handle(conn net.Conn, initials InitialsProvider) {
 			return
 		}
 	}
-	log.Info().Msg("initial lines written")
 
 	for message, ok := <-h.receiver; ok; {
-		log.Info().Str("message", message).Msg("writing message")
 		if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			log.Error().Err(err).Msg("failed to set write deadline")
 			return
 		}
 		if _, err := rw.WriteString(message + "\n"); err != nil {
 			log.Error().Err(err).Msg("failed to write message")
+			return
+		}
+		if err := rw.Flush(); err != nil {
+			log.Error().Err(err).Msg("failed to flush writer")
 			return
 		}
 	}
@@ -171,7 +175,6 @@ func (h *handler) authorize(packet string) bool {
 		return false
 	}
 	ok := handshake.PasswordHash == h.hash()
-	log.Info().Str("hostname", handshake.Hostname).Bool("authorized", ok).Msg("received client handshake")
 	return ok
 }
 
